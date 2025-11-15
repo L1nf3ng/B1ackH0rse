@@ -2,4 +2,6 @@ venv/*
 
 .idea/*
 
-*.pyc
+# Added by cargo
+
+/target
