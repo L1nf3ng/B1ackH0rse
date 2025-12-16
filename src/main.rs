@@ -1,6 +1,5 @@
 use B1ackH0rse::config::Config;
 use B1ackH0rse::network_engine::server::proxy_services;
-
 use hyper::server::{Server, conn::AddrStream};
 use hyper::service::{make_service_fn, service_fn};
 use std::net::SocketAddr;
