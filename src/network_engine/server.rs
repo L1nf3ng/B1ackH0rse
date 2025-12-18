@@ -1,8 +1,6 @@
 use hyper::{Body, Client, Method, Request, Response, StatusCode};
-use tokio::io::{split, AsyncWriteExt}; 
+use tokio::io::{AsyncWriteExt, copy_bidirectional, split}; 
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
-use std::sync::Arc;
 use std::net::SocketAddr;
 
 
@@ -74,8 +72,8 @@ pub async fn handle_https_without_cert(req:Request<Body>) -> Result<Response<Bod
     println!("Establishing tunnel to target: {}", target);
     
     // 2. 连接目标服务器
-    let stream = match TcpStream::connect(target).await {
-        Ok(ok) =>  Arc::new(Mutex::new(ok)), 
+    let mut stream = match TcpStream::connect(target).await {
+        Ok(ok) =>  ok, 
         Err(e) => {
             eprintln!("Failed to connect to target {}: {}", target, e);
             // 返回502 Bad Gateway响应
@@ -91,36 +89,51 @@ pub async fn handle_https_without_cert(req:Request<Body>) -> Result<Response<Bod
         .status(StatusCode::OK)
         .body(Body::empty()).expect("Failed to build response");
     
-    // 4. 后续的字节转发交给更底层的tcp流处理，这里只返回响应头 
-    let (mut client_io, mut server_io) = match hyper::upgrade::on(req).await {
-        Ok(io) => split(io),
-        Err(e) => {
-            eprintln!("Error in getting client stream: {}", e);
-            let response = Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty()).expect("Failed to build response");
-            return Ok(response);
+
+    let upgraded = hyper::upgrade::on(req);
+
+    tokio::spawn(async move{
+        match upgraded.await {
+            Ok(mut client_stream) => {
+                let _ = copy_bidirectional(&mut client_stream, &mut stream).await;
+            },
+            Err(e) => {
+                eprintln!("Upgrade error: {}", e);
+            }
         }
-    };
-    
-    let stream_c1 = Arc::clone(&stream);
-    // 开新的线程双向转发数据，
-    tokio::spawn(async move {
-        let mut stream_guard  = stream_c1.lock().await;
-        let mut stream1 = &mut *stream_guard;
-        // 客户端的请求给目标方，client_io这里是读客户端的
-        let _ = tokio::io::copy(&mut client_io, &mut stream1).await;
-        let _ = stream1.shutdown().await;
     });
 
-    let stream_c2 = Arc::clone(&stream);
-    tokio::spawn(async move {
-        let mut stream_guard  = stream_c2.lock().await;
-        let mut stream2 = &mut *stream_guard;
-        // 目标方的返回给客户端，server_io这里是写给客户端的
-        let _ = tokio::io::copy(&mut stream2, &mut server_io).await;
-        let _ = server_io.shutdown().await;
-    });
+
+    // // 4. 后续的字节转发交给更底层的tcp流处理，这里只返回响应头 
+    // let (mut client_io, mut server_io) = match hyper::upgrade::on(req).await {
+    //     Ok(io) => split(io),
+    //     Err(e) => {
+    //         eprintln!("Error in getting client stream: {}", e);
+    //         let response = Response::builder()
+    //             .status(StatusCode::INTERNAL_SERVER_ERROR)
+    //             .body(Body::empty()).expect("Failed to build response");
+    //         return Ok(response);
+    //     }
+    // };
+    
+    // let stream_c1 = Arc::clone(&stream);
+    // // 开新的线程双向转发数据，
+    // tokio::spawn(async move {
+    //     let mut stream_guard  = stream_c1.lock().await;
+    //     let mut stream1 = &mut *stream_guard;
+    //     // 客户端的请求给目标方，client_io这里是读客户端的
+    //     let _ = tokio::io::copy(&mut client_io, &mut stream1).await;
+    //     let _ = stream1.shutdown().await;
+    // });
+
+    // let stream_c2 = Arc::clone(&stream);
+    // tokio::spawn(async move {
+    //     let mut stream_guard  = stream_c2.lock().await;
+    //     let mut stream2 = &mut *stream_guard;
+    //     // 目标方的返回给客户端，server_io这里是写给客户端的
+    //     let _ = tokio::io::copy(&mut stream2, &mut server_io).await;
+    //     let _ = server_io.shutdown().await;
+    // });
 
     Ok(response)
 }
