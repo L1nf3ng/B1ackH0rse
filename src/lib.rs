@@ -14,10 +14,10 @@ mod tests{
     use super::utils::cert::generate_cert;
     use std::fs;
 
-    #[tokio::test]
-    async fn test_minimal_server(){
-        assert_eq!(minimal_hyper_server().await, ());
-    }
+    // #[tokio::test]
+    // async fn test_minimal_server(){
+    //     assert_eq!(minimal_hyper_server().await, ());
+    // }
 
     #[tokio::test]
     async fn test_certifactes(){

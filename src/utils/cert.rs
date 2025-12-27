@@ -1,5 +1,6 @@
-use std::{path::Path, fs};
-use rcgen::{Certificate, KeyPair, CertificateParams, IsCa, BasicConstraints, Issuer};
+use std::{alloc::System, fs, path::Path};
+use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
+use rcgen::{BasicConstraints, KeyUsagePurpose, Certificate, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair};
 use std::error::Error;
 
 
@@ -22,15 +23,44 @@ use std::error::Error;
 
 /// 在没有证书的情况下使用命令行参数可以生成一个证书，客户端需安装它并选择信任它。
 pub fn generate_cert() -> Result<(String, String), Box<dyn Error> >{
-    
-    // default algorithm is PKCS_ECDSA_P256_SHA256
-    let kp = KeyPair::generate();
-    if let Ok(key_pair) = kp {
-        let pem = key_pair.public_key_pem();
-        let kp_pem = key_pair.serialize_pem();
-        Ok((pem, kp_pem))
-    }else{
-        panic!("Error in creating certifications!");
-    }
+    let mut ca_params = CertificateParams::default();
+
+    // add Domain Name
+    let mut dn = DistinguishedName::default();
+    dn.push(DnType::CommonName, "XT-Sec");
+    dn.push(DnType::OrganizationName, "B1ackH0rse");
+    dn.push(DnType::OrganizationalUnitName, "XTransfer-Sec-Group");
+    ca_params.distinguished_name = dn;
+
+    // set CA properties
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+
+    // set purpose explanation
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature, // 用于数字签名
+        KeyUsagePurpose::KeyCertSign,  // 用于签发子证书
+        KeyUsagePurpose::CrlSign,      // 允许吊销列表签名
+    ];
+
+    // set expire time
+    let now = OffsetDateTime::now_utc();
+    let target = Date::from_calendar_date(now.year()+3, now.month(), now.day());
+    let primitive_dt = PrimitiveDateTime::new(target.expect("invalid datetime"), Time::MIDNIGHT);
+
+    ca_params.not_before = now;
+    ca_params.not_after = primitive_dt.assume_utc();
+
+
+    // get the key pair
+    let key_pair = KeyPair::generate().unwrap();
+    // get certificate 
+    let cert = ca_params.self_signed(&key_pair).unwrap();
+
+
+    // get string tuple
+    let pem = cert.pem();
+    let kp_pem = key_pair.serialize_pem();
+    Ok((pem, kp_pem))
+
 }
 
