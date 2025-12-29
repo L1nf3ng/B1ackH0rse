@@ -1,7 +1,15 @@
-use hyper::{Body, Client, Method, Request, Response, StatusCode};
-use tokio::io::{AsyncWriteExt, copy_bidirectional, split}; 
+use hyper::{Body, Client, Uri, Method, Request, Response, StatusCode};
+use hyper::service::service_fn;
+use hyper_rustls::HttpsConnectorBuilder;
+// use hyper_rustls::{HttpsConnector, rustls::{ServerConfig, TlsAcceptor}};
+use tokio::io::{AsyncWriteExt, copy_bidirectional};
+use log::{info, error, warn};
 use tokio::net::TcpStream;
 use std::net::SocketAddr;
+use std::sync::Arc;
+// use rustls::ServerConfig;
+use tokio_rustls::{TlsAcceptor, rustls::{ServerConfig, ClientConfig, RootCertStore}};
+use crate::utils::cert::load_cert;
 
 
 pub async fn proxy_services(_req: Request<Body>, remote: SocketAddr ) -> Result<Response<Body>,  hyper::Error> {
@@ -13,7 +21,8 @@ pub async fn proxy_services(_req: Request<Body>, remote: SocketAddr ) -> Result<
             // 对于HTTPS来说开启Connect隧道，制作字节转发
             println!("Received HTTPS request from {}", remote);
             // 这里应该有判断逻辑，选择无证书转发或者有证书解密、转发
-            handle_https_without_cert(_req).await
+            // handle_https_without_cert(_req).await
+            handle_https_with_cert(_req, remote).await
         },
         _ => {
             // 别的HTTP请求解析并转发
@@ -90,7 +99,7 @@ pub async fn handle_https_without_cert(req:Request<Body>) -> Result<Response<Bod
         .body(Body::empty()).expect("Failed to build response");
     
 
-    let upgraded = hyper::upgrade::on(req);
+    let upgraded: hyper::upgrade::OnUpgrade = hyper::upgrade::on(req);
 
     tokio::spawn(async move{
         match upgraded.await {
@@ -103,43 +112,77 @@ pub async fn handle_https_without_cert(req:Request<Body>) -> Result<Response<Bod
         }
     });
 
-
-    // // 4. 后续的字节转发交给更底层的tcp流处理，这里只返回响应头 
-    // let (mut client_io, mut server_io) = match hyper::upgrade::on(req).await {
-    //     Ok(io) => split(io),
-    //     Err(e) => {
-    //         eprintln!("Error in getting client stream: {}", e);
-    //         let response = Response::builder()
-    //             .status(StatusCode::INTERNAL_SERVER_ERROR)
-    //             .body(Body::empty()).expect("Failed to build response");
-    //         return Ok(response);
-    //     }
-    // };
-    
-    // let stream_c1 = Arc::clone(&stream);
-    // // 开新的线程双向转发数据，
-    // tokio::spawn(async move {
-    //     let mut stream_guard  = stream_c1.lock().await;
-    //     let mut stream1 = &mut *stream_guard;
-    //     // 客户端的请求给目标方，client_io这里是读客户端的
-    //     let _ = tokio::io::copy(&mut client_io, &mut stream1).await;
-    //     let _ = stream1.shutdown().await;
-    // });
-
-    // let stream_c2 = Arc::clone(&stream);
-    // tokio::spawn(async move {
-    //     let mut stream_guard  = stream_c2.lock().await;
-    //     let mut stream2 = &mut *stream_guard;
-    //     // 目标方的返回给客户端，server_io这里是写给客户端的
-    //     let _ = tokio::io::copy(&mut stream2, &mut server_io).await;
-    //     let _ = server_io.shutdown().await;
-    // });
-
     Ok(response)
 }
 
 
-pub async fn handle_https_with_cert(){
+pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Result<Response<Body>, hyper::Error> {
     // 再写这个，当客户端安装了证书后。先解密，再转发。
-    todo!()
+    let authority = req.uri().authority().unwrap().as_str();
+    // 原域名不含端口号时，默认443端口
+    let (domain, port) = authority.split_once(':').unwrap_or((authority, "443"));
+    println!("建立MITM隧道：{}:{}", domain, port);
+
+    //1. 返回给客户端一个Connection Established响应
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty()).expect("Failed to build response");
+    
+    // 升级获得更底层stream流的读写能力，即TCP层
+    let upgraded: hyper::upgrade::Upgraded = hyper::upgrade::on(req).await.unwrap();
+
+    // 2. 利用证书和客户端建立连接
+    let (certs, pri_key) = load_cert().unwrap(); // load_cert().unwrap();
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, pri_key)
+        .expect("Failed to create server config");
+
+    // 官方使用文档：https://github.com/rustls/hyper-rustls/blob/main/examples/server.rs
+    let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let mut client_tls = match tls_acceptor.accept(upgraded).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("与客户端 TLS 握手失败: {}", e);
+            return Ok(response);
+        }
+    };
+
+    // 3. 代替客户端和真实目标建立https连接
+    // let client_config = ClientConfig::builder()
+    //         .with_root_certificates(RootCertStore::empty())
+    //         .with_no_client_auth();
+    // let https_connector = HttpsConnectorBuilder::new()
+    //     .with_tls_config(client_config)
+    //     .https_or_http()
+    //     .enable_http1()
+    //     .build();
+    // let client = Client::builder().build::<_, Body>(https_connector);
+
+    // 4. 新拉起一个进程在其中完成流量传递。
+    tokio::spawn(async move {
+       // 代理 <-> 真实服务器：基于 hyper 处理 HTTP 明文
+       async fn handle_decrypted_http_request(_req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+            // 构建 200 响应，响应体为 Hello from the proxy
+            let response = Response::builder()
+                .status(StatusCode::OK) // 状态码 200
+                .header("Content-Type", "text/plain; charset=utf-8") // 设置响应体格式
+                .body(Body::from("Hello from the MIME Proxy")) // 响应体内容
+                .unwrap();
+            Ok(response)
+        }
+        let service = service_fn(handle_decrypted_http_request);
+
+        if let Err(e) = hyper::server::conn::Http::new().
+        serve_connection(&mut client_tls, service).
+        await{
+            error!("Error serving connection: {}", e);
+        }
+    });
+    // let mut req_bytes = BytesMut::new();
+    // client_tls_stream.read_to_end(&mut req_bytes).await.unwrap();
+    // let req = String::from_utf8_lossy(&req_bytes);
+    // info!("解密客户端请求：\n{}", req);
+
+    Ok(response)
 }
