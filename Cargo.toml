@@ -5,7 +5,12 @@ edition = "2024"
 
 [dependencies]
 tokio =  { version = "1.0", features = ["full"] }
+tokio-rustls = { version = "0.26", default-features = false }
 hyper = { version="0.14", features = ["full"] }
+hyper-rustls = "0.27.7"
+rustls = "0.21"
+rustls-pemfile = "2"
+pki-types = { package = "rustls-pki-types", version = "1" }
 rcgen = { version="0.14.6", features = ["pem", "x509-parser"]}
 time = { version = "0.3.6", default-features = false }
 anyhow = "1.0"

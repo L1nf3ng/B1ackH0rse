@@ -1,29 +1,44 @@
-use std::{fs, path::Path};
-use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
-use rcgen::{BasicConstraints, KeyUsagePurpose, Certificate, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair};
-use rustls_pemfile::{certs, pkcs8_private_keys}; 
+use std::{fs, path::Path, io::BufReader};
+use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
+use rcgen::{BasicConstraints, KeyUsagePurpose, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
+use rustls_pemfile::{certs, private_key};
+use pki_types::{CertificateDer, PrivateKeyDer};
+use std::io;
 use std::error::Error;
 
 
 /// 参考文档：https://blog.csdn.net/yuan__once/article/details/137635953
 /// 加载已经生成的证书进程序
-// pub fn load_cert() -> Result<(Issuer<'_>, KeyPair), &'static str>{
-//     let pem_dir = "./output/";
-//     let ca_path = pem_dir.to_string() + "cert.pem";
-//     let pri_key_path = pem_dir.to_string() + "prikey.pem";
+pub fn load_cert() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), &'static str>{
+    let pem_dir = "./output/";
+    let cert_path = pem_dir.to_string() + "cert.der";
+    let pri_key_path = pem_dir.to_string() + "prikey.der";
 
-//     if Path::new(&ca_path).exists() && Path::new(&pri_key_path).exists() {
-//         let ca_str: String = fs::read_to_string(&ca_path).unwrap();
-//         let key_str: String = fs::read_to_string(&pri_key_path).unwrap();
-//         // TODO: 不兼容，需检索正确的加载方式。
-//         // let cert = Certificate::from_pem(&ca_str).unwrap();
-//         // let key: KeyPair = KeyPair::from_pem(&key_str).unwrap();
-//         Ok((cert, key))
-//     }
-//     else{
-//         return Err("either ca.pem or it's private-key not exists, Generate one please.")
-//     }
-// }
+    if Path::new(&cert_path).exists() && Path::new(&pri_key_path).exists() {
+        let cert_fs= fs::File::open(&cert_path).unwrap();
+        let key_fs = fs::File::open(&pri_key_path).unwrap();
+        let mut cert_reader = BufReader::new(cert_fs);
+        let mut key_reader = BufReader::new(key_fs);
+
+        let certs = certs(&mut cert_reader)
+            .filter_map(|result|{
+                match result {
+                    Ok(cert) => Some(CertificateDer::from(cert)),
+                    Err(_) => None,
+                }   
+            }).collect();
+
+        let key = match private_key(&mut key_reader){
+            Ok(Some(k)) => k,
+            Ok(None) => return Err("No private key found in prikey.der"),
+            Err(_) => return Err("Failed to load private key from prikey.der"), 
+        };
+        Ok(( certs, key))
+    }
+    else{
+        return Err("either cert.pem or it's private-key not exists, Generate one please.")
+    }
+}
 
 /// 在没有证书的情况下使用命令行参数可以生成一个证书，客户端需安装它并选择信任它。
 pub fn generate_cert() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error> >{

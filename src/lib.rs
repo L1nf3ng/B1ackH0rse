@@ -5,12 +5,10 @@ pub mod utils;
 pub mod config;
 
 
-
 #[cfg(test)]
 mod tests{
 
     use crate::utils::cert;
-
     use super::network_engine::learn_hyper::minimal_hyper_server;
     use super::utils::cert::generate_cert;
     use core::panic;
@@ -39,6 +37,5 @@ mod tests{
                 panic!("Failed to generate certificate: {}", e);
             }
         }
-
     }
 }
