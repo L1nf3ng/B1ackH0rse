@@ -6,7 +6,8 @@ venv/*
 
 # Added by cargo
 
-/target
+/target/*
+/output/*
 
 *.pem
-
+*.der

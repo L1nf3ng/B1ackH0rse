@@ -5,6 +5,7 @@ pub mod utils;
 pub mod config;
 
 
+
 #[cfg(test)]
 mod tests{
 
@@ -12,7 +13,9 @@ mod tests{
 
     use super::network_engine::learn_hyper::minimal_hyper_server;
     use super::utils::cert::generate_cert;
+    use core::panic;
     use std::fs;
+    use std::path::Path;
 
     // #[tokio::test]
     // async fn test_minimal_server(){
@@ -21,12 +24,20 @@ mod tests{
 
     #[tokio::test]
     async fn test_certifactes(){
+        let output_dir = "./output/";
         match generate_cert() {
-            Ok((cert_str, key_str)) => {
-                fs::write("cert.pem", cert_str).unwrap();
-                fs::write("prikey.pem", key_str).unwrap();
+            Ok((cert_der, key_der)) => {
+                // 增加路径不存在则新建的能力。
+                if Path::new(output_dir).exists() == false {
+                    fs::create_dir(output_dir).unwrap();
+                }
+
+                fs::write(output_dir.to_string() + "cert.der", cert_der).unwrap();
+                fs::write(output_dir.to_string() + "prikey.der", key_der).unwrap();
             },
-            _ => {}
+            Err(e) => {
+                panic!("Failed to generate certificate: {}", e);
+            }
         }
 
     }
