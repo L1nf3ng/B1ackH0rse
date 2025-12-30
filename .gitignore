@@ -11,3 +11,4 @@ venv/*
 
 *.pem
 *.der
+*.py

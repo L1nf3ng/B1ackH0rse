@@ -30,12 +30,25 @@ mod tests{
                     fs::create_dir(output_dir).unwrap();
                 }
 
-                fs::write(output_dir.to_string() + "cert.der", cert_der).unwrap();
-                fs::write(output_dir.to_string() + "prikey.der", key_der).unwrap();
+                fs::write(output_dir.to_string() + "cert.pem", cert_der).unwrap();
+                fs::write(output_dir.to_string() + "prikey.pem", key_der).unwrap();
             },
             Err(e) => {
                 panic!("Failed to generate certificate: {}", e);
             }
         }
     }
+
+    #[tokio::test]
+    async fn test_load_certifactes(){
+        match cert::load_cert() {
+            Ok((certs, key)) => {
+                assert!(certs.len() > 0);
+            },
+            Err(e) => {
+                panic!("Failed to load certificate: {}", e);
+            }
+        }
+    }
+
 }

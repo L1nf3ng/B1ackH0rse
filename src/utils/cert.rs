@@ -1,8 +1,8 @@
 use std::{fs, path::Path, io::BufReader};
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 use rcgen::{BasicConstraints, KeyUsagePurpose, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
-use rustls_pemfile::{certs, private_key};
-use pki_types::{CertificateDer, PrivateKeyDer};
+use rustls_pemfile::{certs, pkcs8_private_keys, read_one, read_all};
+use pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, PrivateSec1KeyDer};
 use std::io;
 use std::error::Error;
 
@@ -11,8 +11,8 @@ use std::error::Error;
 /// 加载已经生成的证书进程序
 pub fn load_cert() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), &'static str>{
     let pem_dir = "./output/";
-    let cert_path = pem_dir.to_string() + "cert.der";
-    let pri_key_path = pem_dir.to_string() + "prikey.der";
+    let cert_path = pem_dir.to_string() + "cert.pem";
+    let pri_key_path = pem_dir.to_string() + "prikey.pem";
 
     if Path::new(&cert_path).exists() && Path::new(&pri_key_path).exists() {
         let cert_fs= fs::File::open(&cert_path).unwrap();
@@ -23,17 +23,22 @@ pub fn load_cert() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'stati
         let certs = certs(&mut cert_reader)
             .filter_map(|result|{
                 match result {
-                    Ok(cert) => Some(CertificateDer::from(cert)),
+                    Ok(cert) => Some(cert),
                     Err(_) => None,
                 }   
             }).collect();
 
-        let key = match private_key(&mut key_reader){
-            Ok(Some(k)) => k,
-            Ok(None) => return Err("No private key found in prikey.der"),
-            Err(_) => return Err("Failed to load private key from prikey.der"), 
-        };
-        Ok(( certs, key))
+        let keys: Vec<PrivatePkcs8KeyDer<'static>> = pkcs8_private_keys(&mut key_reader)
+             .filter_map(|result|{
+                match result {
+                    Ok(key) => Some(key),
+                    Err(_) => None,
+                }   
+            }).collect();
+        
+        let pkcs8_key = keys.into_iter().next().ok_or("No private key found")?;
+        let key = PrivateKeyDer::Pkcs8(pkcs8_key);
+        Ok((certs, key))
     }
     else{
         return Err("either cert.pem or it's private-key not exists, Generate one please.")
@@ -41,7 +46,7 @@ pub fn load_cert() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'stati
 }
 
 /// 在没有证书的情况下使用命令行参数可以生成一个证书，客户端需安装它并选择信任它。
-pub fn generate_cert() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error> >{
+pub fn generate_cert() -> Result<(String, String), Box<dyn Error> >{
     let mut ca_params = CertificateParams::default();
 
     // add Domain Name
@@ -77,9 +82,10 @@ pub fn generate_cert() -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error> >{
 
 
     // get string tuple
-    let cert_der = cert.der().as_ref();
-    let kp_der = key_pair.serialized_der();
-    Ok((cert_der.to_vec(), kp_der.to_vec()))
+    let cert_str = cert.pem();
+    let kp_str = key_pair.serialize_pem();
+    Ok((cert_str, kp_str))
+    // Ok((cert_der.to_vec(), kp_der.to_vec()))
 
 }
 

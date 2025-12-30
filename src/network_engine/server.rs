@@ -127,9 +127,6 @@ pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Re
     let response = Response::builder()
         .status(StatusCode::OK)
         .body(Body::empty()).expect("Failed to build response");
-    
-    // 升级获得更底层stream流的读写能力，即TCP层
-    let upgraded: hyper::upgrade::Upgraded = hyper::upgrade::on(req).await.unwrap();
 
     // 2. 利用证书和客户端建立连接
     let (certs, pri_key) = load_cert().unwrap(); // load_cert().unwrap();
@@ -137,6 +134,10 @@ pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Re
         .with_no_client_auth()
         .with_single_cert(certs, pri_key)
         .expect("Failed to create server config");
+
+        
+    // 升级获得更底层stream流的读写能力，即TCP层
+    let upgraded: hyper::upgrade::Upgraded = hyper::upgrade::on(req).await.unwrap();    
 
     // 官方使用文档：https://github.com/rustls/hyper-rustls/blob/main/examples/server.rs
     let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
