@@ -127,7 +127,28 @@ pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Re
     let response = Response::builder()
         .status(StatusCode::OK)
         .body(Body::empty()).expect("Failed to build response");
+        
+    // 升级获得更底层stream流的读写能力，即TCP层
+    let upgraded:hyper::upgrade::OnUpgrade = hyper::upgrade::on(req);    
 
+    tokio::spawn(async move {
+        match upgraded.await {
+            Ok(new_stream) => {
+                info!("与客户端 {} 完成升级", remote);
+                // 与客户端建立连接后，可以在这里处理流量
+                handle_upgraded_https_traffics(new_stream).await;
+            },
+            Err(e) => {
+                error!("升级错误: {}", e);
+            }
+        }
+    });
+
+    Ok(response)
+}
+
+
+async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded) {
     // 2. 利用证书和客户端建立连接
     let (certs, pri_key) = load_cert().unwrap(); // load_cert().unwrap();
     let server_config = ServerConfig::builder()
@@ -135,19 +156,9 @@ pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Re
         .with_single_cert(certs, pri_key)
         .expect("Failed to create server config");
 
-        
-    // 升级获得更底层stream流的读写能力，即TCP层
-    let upgraded: hyper::upgrade::Upgraded = hyper::upgrade::on(req).await.unwrap();    
-
     // 官方使用文档：https://github.com/rustls/hyper-rustls/blob/main/examples/server.rs
     let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
-    let mut client_tls = match tls_acceptor.accept(upgraded).await {
-        Ok(s) => s,
-        Err(e) => {
-            error!("与客户端 TLS 握手失败: {}", e);
-            return Ok(response);
-        }
-    };
+    let mut client_tls = tls_acceptor.accept(stream).await.unwrap();
 
     // 3. 代替客户端和真实目标建立https连接
     // let client_config = ClientConfig::builder()
@@ -159,6 +170,7 @@ pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Re
     //     .enable_http1()
     //     .build();
     // let client = Client::builder().build::<_, Body>(https_connector);
+
 
     // 4. 新拉起一个进程在其中完成流量传递。
     tokio::spawn(async move {
@@ -180,10 +192,7 @@ pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Re
             error!("Error serving connection: {}", e);
         }
     });
-    // let mut req_bytes = BytesMut::new();
-    // client_tls_stream.read_to_end(&mut req_bytes).await.unwrap();
-    // let req = String::from_utf8_lossy(&req_bytes);
-    // info!("解密客户端请求：\n{}", req);
 
-    Ok(response)
+
 }
+

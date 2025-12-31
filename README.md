@@ -69,7 +69,7 @@ WHorse是一个精简的、可高度定制化的黑盒漏洞扫描器，笔者�
 | --- | --- | --- |
 | 2025.11.17 - 11.24 | 大模块搭建，监听功能实现 | ✅ |
 | 2025.11.24 - 11.31 | http解析、https解析、websocket解析 | 1/3✅ |
-| 2025.12.15 - 12.31 | 证书生成、加载逻辑 | ✅ | 
+| 2025.12.15 - 12.31 | 证书生成、加载逻辑、动态签发证书 | 2/3✅ | 
 | 2026.1.1 - 1.31 |  参数树核心模块！！！| 未开始 |
 
 
@@ -85,4 +85,5 @@ WHorse是一个精简的、可高度定制化的黑盒漏洞扫描器，笔者�
 
 1. [https://github.com/imiyoo2010/teye_scanner_for_book](https://github.com/imiyoo2010/teye_scanner_for_book)
 2. [https://www.anquanke.com/post/id/178339]()
-2. [http://blog.fatezero.org/2018/03/05/web-scanner-crawler-01/]()
+3. [http://blog.fatezero.org/2018/03/05/web-scanner-crawler-01/]()
+4. [https://blog.csdn.net/yuan__once/article/details/137635953](https://blog.csdn.net/yuan__once/article/details/137635953)
