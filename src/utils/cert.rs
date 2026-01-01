@@ -4,6 +4,7 @@ use rcgen::{BasicConstraints, KeyUsagePurpose, CertificateParams, DistinguishedN
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::error::Error;
+use std::io::Cursor;
 
 
 /// 参考文档：https://blog.csdn.net/yuan__once/article/details/137635953
@@ -43,6 +44,33 @@ pub fn load_cert() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'stati
         return Err("either cert.pem or it's private-key not exists, Generate one please.")
     }
 }
+
+
+pub fn load_cert_from_string(ca_str: String, key_str: String) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), &'static str> {
+    let mut cert_rd = Cursor::new(ca_str.as_bytes());
+    let mut key_rd = Cursor::new(key_str.as_bytes());
+
+    let certs = certs(&mut cert_rd)
+    .filter_map(|result|{
+        match result {
+            Ok(cert) => Some(cert),
+            Err(_) => None,
+        }   
+    }).collect();
+
+    let keys: Vec<PrivatePkcs8KeyDer<'static>> = pkcs8_private_keys(&mut key_rd)
+    .filter_map(|result|{
+       match result {
+           Ok(key) => Some(key),
+           Err(_) => None,
+       }   
+   }).collect();
+
+    let pkcs8_key = keys.into_iter().next().ok_or("No private key found")?;
+    let key = PrivateKeyDer::Pkcs8(pkcs8_key);
+    Ok((certs, key))
+}
+
 
 /// 在没有证书的情况下使用命令行参数可以生成一个证书，客户端需安装它并选择信任它。
 pub fn generate_ca_cert() -> Result<(String, String), Box<dyn Error> >{
