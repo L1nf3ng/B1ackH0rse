@@ -10,7 +10,7 @@ mod tests{
 
     use crate::utils::cert;
     use super::network_engine::learn_hyper::minimal_hyper_server;
-    use super::utils::cert::generate_cert;
+    use super::utils::cert::generate_ca_cert;
     use core::panic;
     use std::fs;
     use std::path::Path;
@@ -23,7 +23,7 @@ mod tests{
     #[tokio::test]
     async fn test_certifactes(){
         let output_dir = "./output/";
-        match generate_cert() {
+        match generate_ca_cert() {
             Ok((cert_der, key_der)) => {
                 // 增加路径不存在则新建的能力。
                 if Path::new(output_dir).exists() == false {
@@ -50,5 +50,25 @@ mod tests{
             }
         }
     }
+
+    #[tokio::test]
+    async fn test_generate_server_certifactes(){
+        let output_dir = "./output/";
+        match cert::generate_server_cert("www.baidu.com") {
+            Ok((cert_der, key_der)) => {
+                // 增加路径不存在则新建的能力。
+                if Path::new(output_dir).exists() == false {
+                    fs::create_dir(output_dir).unwrap();
+                }
+
+                fs::write(output_dir.to_string() + "server_cert.pem", cert_der).unwrap();
+                fs::write(output_dir.to_string() + "server_prikey.pem", key_der).unwrap();
+            },
+            Err(e) => {
+                panic!("Failed to generate certificate: {}", e);
+            }
+        }
+    }
+
 
 }
