@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 // use rustls::ServerConfig;
 use tokio_rustls::{TlsAcceptor, rustls::{ServerConfig, ClientConfig, RootCertStore}};
-use crate::utils::cert::load_cert;
+use crate::utils::cert::{load_cert_from_string, generate_server_cert};
 
 
 pub async fn proxy_services(_req: Request<Body>, remote: SocketAddr ) -> Result<Response<Body>,  hyper::Error> {
@@ -116,7 +116,7 @@ pub async fn handle_https_without_cert(req:Request<Body>) -> Result<Response<Bod
 }
 
 
-pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Result<Response<Body>, hyper::Error> {
+pub async fn handle_https_with_cert(mut req:Request<Body>, remote: SocketAddr) -> Result<Response<Body>, hyper::Error> {
     // 再写这个，当客户端安装了证书后。先解密，再转发。
     let authority = req.uri().authority().unwrap().as_str();
     // 原域名不含端口号时，默认443端口
@@ -129,14 +129,16 @@ pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Re
         .body(Body::empty()).expect("Failed to build response");
         
     // 升级获得更底层stream流的读写能力，即TCP层
-    let upgraded:hyper::upgrade::OnUpgrade = hyper::upgrade::on(req);    
+    let upgraded:hyper::upgrade::OnUpgrade = hyper::upgrade::on( &mut req);    
 
     tokio::spawn(async move {
         match upgraded.await {
-            Ok(new_stream) => {
+            Ok(new_stream) =>{
                 info!("与客户端 {} 完成升级", remote);
+                // move的时候没有将domain移动过来吗？？
+                let host = req.uri().host().unwrap();
                 // 与客户端建立连接后，可以在这里处理流量
-                handle_upgraded_https_traffics(new_stream).await;
+                handle_upgraded_https_traffics(new_stream, host).await;
             },
             Err(e) => {
                 error!("升级错误: {}", e);
@@ -148,9 +150,13 @@ pub async fn handle_https_with_cert(req:Request<Body>, remote: SocketAddr) -> Re
 }
 
 
-async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded) {
+async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host:&str) {
+    // 1. 加载根证书来为目标服务生成服务器证书
+    let (server_ca, server_key) = generate_server_cert(host).unwrap();
+    
+
     // 2. 利用证书和客户端建立连接
-    let (certs, pri_key) = load_cert().unwrap(); // load_cert().unwrap();
+    let (certs, pri_key) = load_cert_from_string(server_ca, server_key).unwrap(); // load_cert().unwrap();
     let server_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, pri_key)
@@ -175,7 +181,7 @@ async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded) {
     // 4. 新拉起一个进程在其中完成流量传递。
     tokio::spawn(async move {
        // 代理 <-> 真实服务器：基于 hyper 处理 HTTP 明文
-       async fn handle_decrypted_http_request(_req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+       async fn handle_raw_http_request(_req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
             // 构建 200 响应，响应体为 Hello from the proxy
             let response = Response::builder()
                 .status(StatusCode::OK) // 状态码 200
@@ -184,7 +190,7 @@ async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded) {
                 .unwrap();
             Ok(response)
         }
-        let service = service_fn(handle_decrypted_http_request);
+        let service = service_fn(handle_raw_http_request);
 
         if let Err(e) = hyper::server::conn::Http::new().
         serve_connection(&mut client_tls, service).
