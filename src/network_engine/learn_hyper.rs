@@ -1,28 +1,36 @@
-use hyper::{Body, Request, Response};
-use hyper::service::{make_service_fn, service_fn};
-use hyper::server::Server;  // 说明：rust的包默认采取最少引入的方式，而在hyper中Server放在cfg_feature!宏下，所以它不会被默认引入。
-use std::convert::Infallible;
-use std::net::{SocketAddr};
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::server::conn::http1::Builder;
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper_util::rt::TokioIo;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
 
-async fn hello_world(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
-    Ok(Response::new(Body::from("Hello, World!")))
+async fn hello_world(
+    _req: Request<hyper::body::Incoming>,
+) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    Ok(Response::new(Full::new(Bytes::from("Hello, World!"))))
 }
 
-pub async fn minimal_hyper_server() {
+pub async fn minimal_hyper_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 开始本地监听8888端口。
-    let addr = SocketAddr::from(([127,0,0,1], 8888));
-    // 创建服务工厂，里面的函数决定了处理请求时的行为。    
-    let make_svc = make_service_fn(|_conn| async {
-        Ok::<_, Infallible>(service_fn(hello_world))
-    });
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8090));
+    let listener = TcpListener::bind(&addr).await?;
 
-    // 生成server并引入工厂类
-    let server = Server::bind(&addr).serve(make_svc);
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let io = TokioIo::new(stream);
 
-    // 运行server
-    println!("Listening on http://{}", addr);
-    if let Err(e) = server.await {
-        eprintln!("服务器错误: {}", e);
+        tokio::task::spawn(async move {
+            let conn = Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .serve_connection(io, service_fn(hello_world));
+
+            if let Err(err) = conn.await {
+                eprintln!("Failed to serve connection {:?}", err)
+            }
+        });
     }
 }
-

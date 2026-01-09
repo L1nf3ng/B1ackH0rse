@@ -87,3 +87,10 @@ WHorse是一个精简的、可高度定制化的黑盒漏洞扫描器，笔者�
 2. [https://www.anquanke.com/post/id/178339]()
 3. [http://blog.fatezero.org/2018/03/05/web-scanner-crawler-01/]()
 4. [https://blog.csdn.net/yuan__once/article/details/137635953](https://blog.csdn.net/yuan__once/article/details/137635953)
+
+
+## 其他
+
+hyper1.0和之前有了很大的改版，这些变动记录如下：
+a. 创建服务直接从socket层开始，并service_fn限定了待转换函数只有一个入参。
+b. 服务函数入参变为Incoming，出参为Full包裹的hyper::body::Bytes。
