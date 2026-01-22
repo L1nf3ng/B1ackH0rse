@@ -1,16 +1,19 @@
+use crate::utils::cert;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1;
-use hyper::service::service_fn;
 use hyper::server::conn::http1::Builder;
+use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use crate::utils::cert;
-use hyper_util::rt::TokioIo;
-use std::convert::Infallible;   // 这个错误代表不会出错，所以在函数里即使失败也应该返回Ok(xxx)
+use hyper_rustls::{ConfigBuilderExt, HttpsConnectorBuilder};
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::convert::Infallible; // 这个错误代表不会出错，所以在函数里即使失败也应该返回Ok(xxx)
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::{
-    TlsAcceptor,rustls::{ ServerConfig},
+    TlsAcceptor,
+    rustls::{ClientConfig, ServerConfig},
 };
 
 // hyper升级的官方使用说明：https://hyper.rs/guides/1/upgrading/
@@ -267,7 +270,6 @@ pub async fn handle_https_with_cert(
     Ok(response)
 }
 
-
 async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host: &str) {
     // 1. 加载根证书来为目标服务生成服务器证书
     let (server_ca, server_key) = cert::generate_server_cert(host).unwrap();
@@ -284,28 +286,98 @@ async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host: 
     let stream = TokioIo::new(stream);
     let client_tls = tls_acceptor.accept(stream).await.unwrap();
 
-    // 3. 代替客户端和真实目标建立https连接
-    // let client_config = ClientConfig::builder()
-    //         .with_root_certificates(RootCertStore::empty())
-    //         .with_no_client_auth();
-    // let https_connector = HttpsConnectorBuilder::new()
-    //     .with_tls_config(client_config)
-    //     .https_or_http()
-    //     .enable_http1()
-    //     .build();
-    // let client = Client::builder().build::<_, Body>(https_connector);
-
     // 4. 新拉起一个进程在其中完成流量传递。
     tokio::spawn(async move {
         // 代理 <-> 真实服务器：基于 hyper 处理 HTTP 明文
         async fn handle_raw_http_request(
             _req: Request<Incoming>,
         ) -> Result<Response<Full<Bytes>>, Infallible> {
-            // 构建 200 响应，响应体为 Hello from the proxy
-            let response = Response::builder()
-                .status(StatusCode::OK) // 状态码 200
-                .header("Content-Type", "text/plain; charset=utf-8") // 设置响应体格式
-                .body(Full::new(Bytes::from("Hello from the MIME Proxy"))) // 响应体内容
+            // 解析，然后转成字节转发。
+            let original_uri = _req.uri().clone();
+            println!("我们查出来的uri是这样子：{}", original_uri);
+            let method = _req.method().clone();
+            let version = _req.version();
+            let headers = _req.headers().clone();
+
+            // 从 Host 头部获取目标主机
+            let host = headers
+                .get("Host")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("localhost"); // 默认值
+
+            // 重建完整的 URI
+            let scheme = "https"; // 因为是 HTTPS 连接
+            let full_uri = if original_uri.path().starts_with('/') {
+                format!("{}://{}{}", scheme, host, original_uri)
+            } else {
+                format!("{}://{}/{}", scheme, host, original_uri)
+            };
+            println!("重建后的完整URI: {}", full_uri);
+
+            // 构建转发请求（使用之前提取的信息）
+            let mut request_builder = Request::builder()
+                .method(method)
+                .uri(full_uri)
+                .version(version);
+            for (k, v) in headers.iter() {
+                request_builder = request_builder.header(k, v);
+            }
+
+            let req_body = _req.collect().await.unwrap();
+            let req_body_bytes = req_body.to_bytes();
+            let forward_req = request_builder.body(Full::new(req_body_bytes)).unwrap();
+
+            // 3. 代替客户端和真实目标建立https连接
+            let client_config = ClientConfig::builder()
+                .with_native_roots()
+                .unwrap()
+                .with_no_client_auth();
+            let https_connector = HttpsConnectorBuilder::new()
+                .with_tls_config(client_config)
+                .https_or_http()
+                .enable_http1()
+                .build();
+            let as_client =
+                Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https_connector);
+
+            let resp = as_client.request(forward_req).await;
+            let resp = match resp {
+                Ok(response) => response,
+                Err(e) => {
+                    eprintln!("Failed to get response from target server: {}", e);
+                    return Ok(Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .body(Full::new(Bytes::from(
+                            "Failed to get response from target server",
+                        )))
+                        .unwrap());
+                }
+            };
+            
+            // 增加结果解析和替换
+            let status = resp.status();
+            let version = resp.version();
+            let resp_headers = resp.headers().clone();
+            
+            let resp_body = match resp.collect().await {
+                Ok(collected) => collected.to_bytes(),
+                Err(e) => {
+                    eprintln!("Failed to collect response body: {}", e);
+                    return Ok(Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .body(Full::new(Bytes::from("Failed to read response body")))
+                        .unwrap());
+                }
+            };
+            
+            let mut response_builder = Response::builder().status(status).version(version);
+        
+            // 复制响应头（使用之前提取的 headers）
+            for (key, value) in resp_headers.iter() {
+                response_builder = response_builder.header(key, value);
+            }
+
+            let response = response_builder.body(Full::new(Bytes::from(resp_body))) // 响应体内容
                 .unwrap();
             Ok(response)
         }
@@ -319,4 +391,3 @@ async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host: 
         }
     });
 }
-
