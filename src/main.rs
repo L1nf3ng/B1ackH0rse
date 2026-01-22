@@ -4,7 +4,7 @@ use hyper::server::conn::http1::Builder;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use std::error::Error;
-use std::net::{SocketAddr, TcpListener};
+use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     loop {
-        let (stream, remote_addr) = listener.accept().await?;
+        let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
 
         tokio::task::spawn(async move {

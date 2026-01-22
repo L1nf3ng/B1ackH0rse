@@ -8,14 +8,19 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
 
+// hyper升级的官方使用说明：https://hyper.rs/guides/1/upgrading/
+
 pub async fn proxy_services(_req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     match _req.method() {
         &Method::CONNECT => {
             println!("Received HTTPS request from ...");
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(Full::new(Bytes::from("")))
-                .unwrap())
+            // Ok(Response::builder()
+            //     .status(StatusCode::OK)
+            //     .body(Full::new(Bytes::from("")))
+            //     .unwrap())
+            // Step1. 先用解密https的方式尝试连接，
+            // Step2. 失败后再用纯代理的方式转发。
+            handle_https_without_cert(_req).await
         }
         _ => {
             println!("Received HTTP request from ...");
@@ -183,26 +188,47 @@ pub async fn handle_http_requests(
 
 pub async fn handle_https_without_cert(
     req: Request<Incoming>,
-) -> Result<Response<Empty<Bytes>>, hyper::Error> {
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let target = req.uri().authority().unwrap().as_str();
     println!("Establishing tunnel to target: {}", target);
 
-    match TcpStream::connect(target).await {
+    let mut stream = match TcpStream::connect(target).await {
         Ok(_stream) => {
             println!("Connected to target: {}", target);
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(Empty::new())
-                .unwrap())
+            _stream
         }
         Err(e) => {
             eprintln!("Failed to connect to target {}: {}", target, e);
-            Ok(Response::builder()
+            return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
-                .body(Empty::new())
-                .unwrap())
+                .body(Full::new(Bytes::from(format!(
+                    "Failed to connect to target {}: {}",
+                    target, e
+                ))))
+                .unwrap());
         }
-    }
+    };
+
+    //3. 返回给客户端一个Connection Established响应
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Full::new(Bytes::from("")))
+        .expect("Failed to build response");
+
+    let upgraded = hyper::upgrade::on(req);
+    tokio::spawn(async move {
+        match upgraded.await {
+            Ok(client_stream) => {
+                let mut upgraded = TokioIo::new(client_stream);
+                let _ = tokio::io::copy_bidirectional(&mut upgraded, &mut stream).await;
+            }
+            Err(e) => {
+                eprintln!("Upgrade error: {}", e);
+            }
+        }
+    });
+
+    Ok(response)
 }
 
 pub async fn handle_https_with_cert(
