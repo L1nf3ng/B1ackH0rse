@@ -16,6 +16,7 @@ use tokio_rustls::{
     rustls::{ClientConfig, ServerConfig},
 };
 
+
 // hyper升级的官方使用说明：https://hyper.rs/guides/1/upgrading/
 
 pub async fn proxy_services(_req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
@@ -313,7 +314,6 @@ async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host: 
                 format!("{}://{}/{}", scheme, host, original_uri)
             };
             println!("重建后的完整URI: {}", full_uri);
-
             // 构建转发请求（使用之前提取的信息）
             let mut request_builder = Request::builder()
                 .method(method)
@@ -337,8 +337,7 @@ async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host: 
                 .https_or_http()
                 .enable_http1()
                 .build();
-            let as_client =
-                Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https_connector);
+            let as_client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https_connector);
 
             let resp = as_client.request(forward_req).await;
             let resp = match resp {
