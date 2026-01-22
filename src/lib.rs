@@ -41,7 +41,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_certifactes() {
         match cert::load_cert() {
-            Ok((certs, key)) => {
+            Ok((certs, _)) => {
                 assert!(certs.len() > 0);
             }
             Err(e) => {

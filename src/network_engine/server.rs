@@ -1,12 +1,17 @@
-use http_body_util::{BodyExt, Empty, Full};
+use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1;
+use hyper::service::service_fn;
+use hyper::server::conn::http1::Builder;
 use hyper::{Method, Request, Response, StatusCode};
-
+use crate::utils::cert;
 use hyper_util::rt::TokioIo;
-use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::convert::Infallible;   // 这个错误代表不会出错，所以在函数里即使失败也应该返回Ok(xxx)
+use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio_rustls::{
+    TlsAcceptor,rustls::{ ServerConfig},
+};
 
 // hyper升级的官方使用说明：https://hyper.rs/guides/1/upgrading/
 
@@ -14,13 +19,10 @@ pub async fn proxy_services(_req: Request<Incoming>) -> Result<Response<Full<Byt
     match _req.method() {
         &Method::CONNECT => {
             println!("Received HTTPS request from ...");
-            // Ok(Response::builder()
-            //     .status(StatusCode::OK)
-            //     .body(Full::new(Bytes::from("")))
-            //     .unwrap())
             // Step1. 先用解密https的方式尝试连接，
             // Step2. 失败后再用纯代理的方式转发。
-            handle_https_without_cert(_req).await
+            // handle_https_without_cert(_req).await
+            handle_https_with_cert(_req).await
         }
         _ => {
             println!("Received HTTP request from ...");
@@ -232,12 +234,89 @@ pub async fn handle_https_without_cert(
 }
 
 pub async fn handle_https_with_cert(
-    req: Request<Incoming>,
-    _remote: SocketAddr,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    mut req: Request<Incoming>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let authority = req.uri().authority().unwrap().as_str();
+    // 原域名不含端口号时，默认443端口
     let (domain, port) = authority.split_once(':').unwrap_or((authority, "443"));
     println!("建立MITM隧道：{}:{}", domain, port);
 
-    Ok(Response::new(Full::new(Bytes::from("MITM proxy handling"))))
+    //1. 返回给客户端一个Connection Established响应
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Full::new(Bytes::from("")))
+        .expect("Failed to build response");
+
+    // 升级获得更底层stream流的读写能力，即TCP层
+    let upgraded: hyper::upgrade::OnUpgrade = hyper::upgrade::on(&mut req);
+
+    tokio::spawn(async move {
+        match upgraded.await {
+            Ok(new_stream) => {
+                println!("与客户端完成升级");
+                // move的时候没有将domain移动过来吗？？
+                let host = req.uri().host().unwrap();
+                // 与客户端建立连接后，可以在这里处理流量
+                handle_upgraded_https_traffics(new_stream, host).await;
+            }
+            Err(e) => {
+                eprintln!("升级错误: {}", e);
+            }
+        }
+    });
+    Ok(response)
 }
+
+
+async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host: &str) {
+    // 1. 加载根证书来为目标服务生成服务器证书
+    let (server_ca, server_key) = cert::generate_server_cert(host).unwrap();
+
+    // 2. 利用证书和客户端建立连接
+    let (certs, pri_key) = cert::load_cert_from_string(server_ca, server_key).unwrap(); // load_cert().unwrap();
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, pri_key)
+        .expect("Failed to create server config");
+
+    // 官方使用文档：https://github.com/rustls/hyper-rustls/blob/main/examples/server.rs
+    let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let stream = TokioIo::new(stream);
+    let client_tls = tls_acceptor.accept(stream).await.unwrap();
+
+    // 3. 代替客户端和真实目标建立https连接
+    // let client_config = ClientConfig::builder()
+    //         .with_root_certificates(RootCertStore::empty())
+    //         .with_no_client_auth();
+    // let https_connector = HttpsConnectorBuilder::new()
+    //     .with_tls_config(client_config)
+    //     .https_or_http()
+    //     .enable_http1()
+    //     .build();
+    // let client = Client::builder().build::<_, Body>(https_connector);
+
+    // 4. 新拉起一个进程在其中完成流量传递。
+    tokio::spawn(async move {
+        // 代理 <-> 真实服务器：基于 hyper 处理 HTTP 明文
+        async fn handle_raw_http_request(
+            _req: Request<Incoming>,
+        ) -> Result<Response<Full<Bytes>>, Infallible> {
+            // 构建 200 响应，响应体为 Hello from the proxy
+            let response = Response::builder()
+                .status(StatusCode::OK) // 状态码 200
+                .header("Content-Type", "text/plain; charset=utf-8") // 设置响应体格式
+                .body(Full::new(Bytes::from("Hello from the MIME Proxy"))) // 响应体内容
+                .unwrap();
+            Ok(response)
+        }
+
+        let mut client_io = TokioIo::new(client_tls);
+        if let Err(e) = Builder::new()
+            .serve_connection(&mut client_io, service_fn(handle_raw_http_request))
+            .await
+        {
+            eprintln!("Error serving connection: {}", e);
+        }
+    });
+}
+
