@@ -7,8 +7,7 @@ use std::error::Error;
 use std::io::Cursor;
 
 
-/// 参考文档：https://blog.csdn.net/yuan__once/article/details/137635953
-/// 加载已经生成的证书进程序
+// 加载已经生成的证书进程序
 pub fn load_cert() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), &'static str>{
     let pem_dir = "./output/";
     let cert_path = pem_dir.to_string() + "cert.pem";
@@ -106,13 +105,11 @@ pub fn generate_ca_cert() -> Result<(String, String), Box<dyn Error> >{
     // get certificate 
     let cert = ca_params.self_signed(&key_pair).unwrap();
 
-
     // get string tuple
     let cert_str = cert.pem();
     let kp_str = key_pair.serialize_pem();
     Ok((cert_str, kp_str))
     // Ok((cert_der.to_vec(), kp_der.to_vec()))
-
 }
 
 
@@ -165,38 +162,3 @@ pub fn generate_server_cert(target_host: &str) -> Result<(String, String), Box<d
 
     return Ok((server_cert.pem(), server_key.serialize_pem()))
 }
-
-
-// fn load_ca_and_sign_cert() {
-//     let ca_cert = r#"-----BEGIN CERTIFICATE-----
-// MIIFDTCCAvWgAwIBAgIUVuDfDt/BUVfObGOHsM+L5/qPZfIwDQYJKoZIhvcNAQEL
-// L2Fl4tgIQ5tyaTpu9gpJZvPU0VZ/j+1Jdk1c9PJ6xhCjof4nzI9YsLbI8lPtu8K/
-// Ng==
-// -----END CERTIFICATE-----"#;
-
-//     let ca_key = r#"-----BEGIN PRIVATE KEY-----
-// MIIJQQIBADANBgkqhkiG9w0BAQEFAASCCSswggknAgEAAoICAQCl8mbL+2cHpPcn
-// JiY98T5oN1X0C/qAXxJfSvklbru9fipwGt3dho5Tm6Ee3cYf+plnk4WZhSnqyef4
-// PITGdT9dgN88nHPCle0B1+OY+OZ5
-// -----END PRIVATE KEY-----"#;
-
-//     let ca_kp = KeyPair::from_pem(ca_key).unwrap();
-//     let ca = Issuer::from_ca_cert_pem(ca_cert, ca_kp).unwrap();
-//     let ca_ski = vec![
-//         0x97, 0xD4, 0x76, 0xA1, 0x9B, 0x1A, 0x71, 0x35, 0x2A, 0xC7, 0xF4, 0xA1, 0x84, 0x12,
-//         0x56, 0x06, 0xBA, 0x5D, 0x61, 0x84,
-//     ];
-
-//     let ca_cert_der = CertificateDer::from_pem_slice(ca_cert.as_bytes()).unwrap();
-//     let (_, x509_ca) = x509_parser::parse_x509_certificate(ca_cert_der.as_ref()).unwrap();
-
-//     let ee_key = KeyPair::generate().unwrap();
-//     let ee_params = CertificateParams {
-//         use_authority_key_identifier_extension: true,
-//         ..CertificateParams::default()
-//     };
-//     let ee_cert = ee_params.signed_by(&ee_key, &ca).unwrap();
-
-//     let (_, x509_ee) = x509_parser::parse_x509_certificate(ee_cert.der()).unwrap();
-
-// }

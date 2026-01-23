@@ -271,7 +271,10 @@ pub async fn handle_https_with_cert(
     Ok(response)
 }
 
-async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host: &str) {
+async fn handle_upgraded_https_traffics(
+    stream: hyper::upgrade::Upgraded, 
+    host: &str) 
+{
     // 1. 加载根证书来为目标服务生成服务器证书
     let (server_ca, server_key) = cert::generate_server_cert(host).unwrap();
 
@@ -382,10 +385,9 @@ async fn handle_upgraded_https_traffics(stream: hyper::upgrade::Upgraded, host: 
         }
 
         let mut client_io = TokioIo::new(client_tls);
-        if let Err(e) = Builder::new()
-            .serve_connection(&mut client_io, service_fn(handle_raw_http_request))
-            .await
+        if let Err(e) = Builder::new().serve_connection(&mut client_io, service_fn(handle_raw_http_request)).await
         {
+            // TODO: 增加更多的数据展示具体出错的原因及目标信息等重要数据，方便排查。
             eprintln!("Error serving connection: {}", e);
         }
     });

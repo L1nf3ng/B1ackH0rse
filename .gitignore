@@ -1,7 +1,7 @@
 venv/*
 
 .idea/*
-
+.zed/*
 .vscode/*
 
 # Added by cargo
