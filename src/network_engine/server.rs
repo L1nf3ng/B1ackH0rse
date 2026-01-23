@@ -1,5 +1,6 @@
 use crate::utils::cert;
 use http_body_util::{BodyExt, Full};
+use hyper::Uri;
 use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1;
 use hyper::server::conn::http1::Builder;
@@ -18,14 +19,13 @@ use tokio_rustls::{
 
 
 // hyper升级的官方使用说明：https://hyper.rs/guides/1/upgrading/
-
 pub async fn proxy_services(_req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     match _req.method() {
         &Method::CONNECT => {
             println!("Received HTTPS request from ...");
             // Step1. 先用解密https的方式尝试连接，
-            // Step2. 失败后再用纯代理的方式转发。
             // handle_https_without_cert(_req).await
+            // Step2. 失败后再用纯代理的方式转发。
             handle_https_with_cert(_req).await
         }
         _ => {
@@ -38,12 +38,6 @@ pub async fn proxy_services(_req: Request<Incoming>) -> Result<Response<Full<Byt
 pub async fn handle_http_requests(
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // 在消费请求之前提取所有需要的信息
-    let target_uri = req.uri().clone();
-    let method = req.method().clone();
-    let version = req.version();
-    let headers = req.headers().clone();
-
     // 获取目标地址
     let authority = req.uri().authority().unwrap().as_str();
     let (domain, port) = authority.split_once(':').unwrap_or((authority, "80"));
@@ -91,57 +85,10 @@ pub async fn handle_http_requests(
         }
     };
 
-    // 收集原始请求的请求体（这会消费 req）
-    let whole_body = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            eprintln!("Failed to collect request body: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from("Failed to read request body")))
-                .unwrap());
-        }
-    };
-
-    // 构建转发请求（使用之前提取的信息）
-    let mut request_builder = Request::builder()
-        .method(method)
-        .uri(target_uri)
-        .version(version);
-
-    // 过滤不需要的请求头
-    let filter_header_list = vec![
-        "Connection",
-        "Keep-Alive",
-        "Proxy-Authenticate",
-        "Proxy-Authorization",
-        "Te",
-        "Trailer",
-        "Transfer-Encoding",
-        "Upgrade",
-    ];
-
-    // 复制请求头（使用之前提取的 headers）
-    for (key, value) in headers.iter() {
-        if !filter_header_list.contains(&key.as_str()) {
-            request_builder = request_builder.header(key, value);
-        }
-    }
-
-    // 构建完整请求
-    let forward_request = match request_builder.body(Full::new(whole_body)) {
-        Ok(req) => req,
-        Err(e) => {
-            eprintln!("Failed to build forward request: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Full::new(Bytes::from("Failed to build forward request")))
-                .unwrap());
-        }
-    };
+    let mod_request = before_request(req, "http").await.unwrap();
 
     // 发送请求并获取响应
-    let response = match sender.send_request(forward_request).await {
+    let response = match sender.send_request(mod_request).await {
         Ok(resp) => resp,
         Err(e) => {
             eprintln!("Failed to send request: {}", e);
@@ -154,42 +101,7 @@ pub async fn handle_http_requests(
                 .unwrap());
         }
     };
-
-    // 在消费响应之前提取状态和版本
-    let status = response.status();
-    let version = response.version();
-    let response_headers = response.headers().clone();
-
-    // 收集响应体（这会消费 response）
-    let response_body = match response.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            eprintln!("Failed to collect response body: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("Failed to read response body")))
-                .unwrap());
-        }
-    };
-
-    // 构建返回响应（使用之前提取的信息）
-    let mut response_builder = Response::builder().status(status).version(version);
-
-    // 复制响应头（使用之前提取的 headers）
-    for (key, value) in response_headers.iter() {
-        response_builder = response_builder.header(key, value);
-    }
-
-    match response_builder.body(Full::new(response_body)) {
-        Ok(resp) => Ok(resp),
-        Err(e) => {
-            eprintln!("Failed to build response: {}", e);
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Full::new(Bytes::from("Failed to build response")))
-                .unwrap())
-        }
-    }
+    after_response(response).await
 }
 
 pub async fn handle_https_without_cert(
@@ -288,6 +200,7 @@ async fn handle_upgraded_https_traffics(
     // 官方使用文档：https://github.com/rustls/hyper-rustls/blob/main/examples/server.rs
     let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
     let stream = TokioIo::new(stream);
+    // TODO: 检查和处理on an `Err` value: Custom { kind: InvalidData, error: AlertReceived(CertificateUnknown)这个错误！！！
     let client_tls = tls_acceptor.accept(stream).await.unwrap();
 
     // 4. 新拉起一个进程在其中完成流量传递。
@@ -296,40 +209,9 @@ async fn handle_upgraded_https_traffics(
         async fn handle_raw_http_request(
             _req: Request<Incoming>,
         ) -> Result<Response<Full<Bytes>>, Infallible> {
-            // 解析，然后转成字节转发。
-            let original_uri = _req.uri().clone();
-            println!("我们查出来的uri是这样子：{}", original_uri);
-            let method = _req.method().clone();
-            let version = _req.version();
-            let headers = _req.headers().clone();
-
-            // 从 Host 头部获取目标主机
-            let host = headers
-                .get("Host")
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or("localhost"); // 默认值
-
-            // 重建完整的 URI
-            let scheme = "https"; // 因为是 HTTPS 连接
-            let full_uri = if original_uri.path().starts_with('/') {
-                format!("{}://{}{}", scheme, host, original_uri)
-            } else {
-                format!("{}://{}/{}", scheme, host, original_uri)
-            };
-            println!("重建后的完整URI: {}", full_uri);
-            // 构建转发请求（使用之前提取的信息）
-            let mut request_builder = Request::builder()
-                .method(method)
-                .uri(full_uri)
-                .version(version);
-            for (k, v) in headers.iter() {
-                request_builder = request_builder.header(k, v);
-            }
-
-            let req_body = _req.collect().await.unwrap();
-            let req_body_bytes = req_body.to_bytes();
-            let forward_req = request_builder.body(Full::new(req_body_bytes)).unwrap();
-
+            
+            let mod_request = before_request(_req, "https").await.unwrap();
+            
             // 3. 代替客户端和真实目标建立https连接
             let client_config = ClientConfig::builder()
                 .with_native_roots()
@@ -341,47 +223,10 @@ async fn handle_upgraded_https_traffics(
                 .enable_http1()
                 .build();
             let as_client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https_connector);
-
-            let resp = as_client.request(forward_req).await;
-            let resp = match resp {
-                Ok(response) => response,
-                Err(e) => {
-                    eprintln!("Failed to get response from target server: {}", e);
-                    return Ok(Response::builder()
-                        .status(StatusCode::BAD_GATEWAY)
-                        .body(Full::new(Bytes::from(
-                            "Failed to get response from target server",
-                        )))
-                        .unwrap());
-                }
-            };
+            // TODO： 排查错误：on an `Err` value: hyper_util::client::legacy::Error(Connect, Custom { kind: Other, error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" } })
+            let resp = as_client.request(mod_request).await.unwrap();
             
-            // 增加结果解析和替换
-            let status = resp.status();
-            let version = resp.version();
-            let resp_headers = resp.headers().clone();
-            
-            let resp_body = match resp.collect().await {
-                Ok(collected) => collected.to_bytes(),
-                Err(e) => {
-                    eprintln!("Failed to collect response body: {}", e);
-                    return Ok(Response::builder()
-                        .status(StatusCode::BAD_GATEWAY)
-                        .body(Full::new(Bytes::from("Failed to read response body")))
-                        .unwrap());
-                }
-            };
-            
-            let mut response_builder = Response::builder().status(status).version(version);
-        
-            // 复制响应头（使用之前提取的 headers）
-            for (key, value) in resp_headers.iter() {
-                response_builder = response_builder.header(key, value);
-            }
-
-            let response = response_builder.body(Full::new(Bytes::from(resp_body))) // 响应体内容
-                .unwrap();
-            Ok(response)
+            after_response(resp).await
         }
 
         let mut client_io = TokioIo::new(client_tls);
@@ -391,4 +236,115 @@ async fn handle_upgraded_https_traffics(
             eprintln!("Error serving connection: {}", e);
         }
     });
+}
+
+
+pub async fn before_request(req: Request<Incoming>, schema:&str) -> Result<Request<Full<Bytes>>, hyper::http::Error>{
+    // 在消费请求之前提取所有需要的信息
+    let target_uri = req.uri().clone();
+    let method = req.method().clone();
+    let version = req.version();
+    let headers = req.headers().clone();
+    
+    // 从 Host 头部获取目标主机
+    let host = headers
+        .get("Host")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("localhost"); // 默认值
+    
+    let full_uri;
+    if schema == "http"{
+        full_uri = target_uri;
+    }else{
+        let full_uri_str = if target_uri.path().starts_with('/') {
+            format!("{}://{}{}", schema, host, target_uri)
+        } else {
+            format!("{}://{}/{}", schema, host, target_uri)
+        };
+        full_uri = full_uri_str.parse::<Uri>().unwrap();
+    }
+    println!("重建后的完整URI: {}", full_uri);
+    
+    // 收集原始请求的请求体（这会消费 req）
+    let whole_body = match req.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            eprintln!("Failed to collect request body: {}", e);
+            Bytes::from("")
+        }
+    };
+    
+    // 构建转发请求（使用之前提取的信息）
+    let mut request_builder = Request::builder()
+        .method(method)
+        .uri(full_uri)
+        .version(version);
+
+    // 过滤不需要的请求头
+    let filter_header_list = vec![
+        "Connection",
+        "Keep-Alive",
+        "Proxy-Authenticate",
+        "Proxy-Authorization",
+        "Te",
+        "Trailer",
+        "Transfer-Encoding",
+        "Upgrade",
+    ];
+
+    // 复制请求头（使用之前提取的 headers）
+    for (key, value) in headers.iter() {
+        if !filter_header_list.contains(&key.as_str()) {
+            request_builder = request_builder.header(key, value);
+        }
+    }
+    
+    // 构建完整请求
+    let forward_request = match request_builder.body(Full::new(whole_body)) {
+        Ok(req) => req,
+        Err(e) => {
+            eprintln!("Failed to build forward request: {}", e);
+            return Err(e);
+        }
+    };
+    Ok(forward_request)
+}
+
+
+pub async fn after_response(resp: Response<Incoming>)-> Result<Response<Full<Bytes>>, Infallible> { 
+    // 在消费响应之前提取状态和版本
+    let status = resp.status();
+    let version = resp.version();
+    let response_headers = resp.headers().clone();
+
+    // 收集响应体（这会消费 response）
+    let response_body = match resp.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            eprintln!("Failed to collect response body: {}", e);
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Full::new(Bytes::from("Failed to read response body")))
+                .unwrap());
+        }
+    };
+
+    // 构建返回响应（使用之前提取的信息）
+    let mut response_builder = Response::builder().status(status).version(version);
+
+    // 复制响应头（使用之前提取的 headers）
+    for (key, value) in response_headers.iter() {
+        response_builder = response_builder.header(key, value);
+    }
+
+    match response_builder.body(Full::new(response_body)) {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            eprintln!("Failed to build response: {}", e);
+            Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Full::new(Bytes::from("Failed to build response")))
+                .unwrap())
+        }
+    }
 }
