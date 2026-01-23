@@ -11,7 +11,7 @@ use std::fs;
 use std::env;
 
 
-fn print_usage(){
+fn print_usage(full: bool){
     let logo = r#"
         __      __               __         
     \ \    / /__  _ __ ___  / /__  ___  
@@ -38,8 +38,13 @@ fn print_usage(){
         --config FILE      Load configuration from FILE (default: "config.yaml")
         --log-level value  Log level, choices are debug, info, warn, error, fatal
         "#;
-    println!("{}", logo);
-    println!("{}", usage);
+    if full==true{
+        println!("{}", logo);
+        println!("{}", usage);
+    }
+    else{
+        println!("{}", logo);
+    }
 }
 
 
@@ -52,7 +57,7 @@ async fn main(){
     // 增加命令行参数处理逻辑。
     let mut args = env::args().skip(1); // 不分析程序名字本身
     if args.len() == 0 {
-        print_usage();
+        print_usage(true);
         println!("请按照以上格式传入正确的参数！！！");
         std::process::exit(-1);
     }
@@ -63,6 +68,7 @@ async fn main(){
                 let output_dir = "./output/";
                 match cert::generate_ca_cert() {
                     Ok((cert_der, key_der)) => {
+                        print_usage(false);
                         // 增加路径不存在则新建的能力。
                         if Path::new(output_dir).exists() == false {
                             fs::create_dir(output_dir).unwrap();
@@ -90,6 +96,7 @@ async fn main(){
                 }
             },
             "webscan" | "ws"=>{
+                print_usage(false);
                 // todo!增加从命令行参数或配置文件读配置的逻辑。
                 let config: Config = Config::default();
                 // 这里我们切换成hyper server
@@ -115,11 +122,11 @@ async fn main(){
                 }
             },
             "--help"| "-h" =>{
-                print_usage();
+                print_usage(true);
                 std::process::exit(0);
             },
             _ => {
-                print_usage();
+                print_usage(true);
                 std::process::exit(-1);
             }
         }
