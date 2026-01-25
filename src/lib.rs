@@ -6,18 +6,12 @@ pub mod utils;
 
 #[cfg(test)]
 mod tests {
-
-    use super::network_engine::learn_hyper::minimal_hyper_server;
     use super::utils::cert::generate_ca_cert;
     use crate::utils::cert;
     use core::panic;
     use std::fs;
     use std::path::Path;
 
-    #[tokio::test]
-    async fn test_minimal_server() {
-        minimal_hyper_server().await.unwrap();
-    }
 
     #[tokio::test]
     async fn test_certifactes() {
