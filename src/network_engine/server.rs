@@ -16,6 +16,7 @@ use tokio_rustls::{
     TlsAcceptor,
     rustls::{ClientConfig, ServerConfig},
 };
+use log::{error};
 
 
 // hyper升级的官方使用说明：https://hyper.rs/guides/1/upgrading/
@@ -209,7 +210,6 @@ async fn handle_upgraded_https_traffics(
         async fn handle_raw_http_request(
             _req: Request<Incoming>,
         ) -> Result<Response<Full<Bytes>>, Infallible> {
-            
             let mod_request = before_request(_req, "https").await.unwrap();
             
             // 3. 代替客户端和真实目标建立https连接
@@ -234,6 +234,7 @@ async fn handle_upgraded_https_traffics(
         {
             // TODO: 增加更多的数据展示具体出错的原因及目标信息等重要数据，方便排查。
             eprintln!("Error serving connection: {}", e);
+            error!("Error serving connection: {};", e);
         }
     });
 }

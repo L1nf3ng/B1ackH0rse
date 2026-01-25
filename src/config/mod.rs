@@ -1,4 +1,9 @@
 use std::net::IpAddr;
+use std::fs::{File, create_dir};
+use std::io::Write;
+use std::path::Path;
+use env_logger::{Builder, Target};
+use time::{OffsetDateTime, macros::format_description};
 
 
 pub struct Config {
@@ -43,4 +48,33 @@ impl Config{
             workers: workers
         }
     }
+}
+
+pub fn setup_file_logger(){
+    
+    let log_dir = "logs";
+    // 增加日志路径存在与否判断
+    if Path::new(log_dir).exists() == false {
+        create_dir(log_dir).unwrap();
+    }
+    
+    let log_file = File::create("logs/app.log").expect("You didn't create the log file!");
+    
+    Builder::new().
+        format(|buf, record| {
+            let now = OffsetDateTime::now_utc();
+            let ts_format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]");
+            writeln!(
+                buf, 
+                "[{}] [{}] {}:{} - {}",
+                now.format(&ts_format).unwrap(),
+                record.level(),
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.args()
+            )
+        }).
+        target(Target::Pipe(Box::new(log_file))).
+        filter(None, log::LevelFilter::Info).
+        init();   
 }

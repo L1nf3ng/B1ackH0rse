@@ -1,10 +1,10 @@
-use B1ackH0rse::config::Config;
+use B1ackH0rse::config::{Config, setup_file_logger};
 use B1ackH0rse::network_engine::server::proxy_services;
 use B1ackH0rse::utils::cert;
 use hyper::server::conn::http1::Builder;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-// use std::error::Error;
+use log::{error};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::fs;
@@ -52,13 +52,15 @@ fn print_usage(full: bool){
 // async fn main() -> Result<(), Box<dyn Error>> {
 async fn main(){
     // 初始化日志
-    env_logger::init();
+    // env_logger::init();
+    setup_file_logger();
     
     // 增加命令行参数处理逻辑。
     let mut args = env::args().skip(1); // 不分析程序名字本身
     if args.len() == 0 {
         print_usage(true);
         println!("请按照以上格式传入正确的参数！！！");
+        error!("请按照以上格式传入正确的参数！！！");
         std::process::exit(-1);
     }
     while let Some(arg) = args.next() {
